@@ -452,6 +452,12 @@ final class SpeexAecWorker {
     let tailMs: Int
     let rate: Int
     let bypass: Bool
+    // 잔여 에코 억제기 세기(dB, 음수).
+    // esupActive는 상대가 말하는 동안(더블토크 포함) 적용된다.
+    // 기본값은 speexdsp 기본과 동일. 2026-09-12에 -15와 -30을 재봤으나
+    // 더블토크 출력이 -48.9 대 -48.4로 차이가 없었다. 나머지 값은 미측정.
+    var echoSuppress: Int = -40
+    var echoSuppressActive: Int = -15
     var autoCalibrate: Bool = false
     private var st: OpaquePointer? = nil
     private var pre: OpaquePointer? = nil
@@ -592,11 +598,11 @@ final class SpeexAecWorker {
             _ = speex_preprocess_ctl(ps, SPEEX_PREPROCESS_SET_DENOISE, &den)
             var ns: CInt = -40
             _ = speex_preprocess_ctl(ps, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &ns)
-            var esup: CInt = -40
+            var esup: CInt = CInt(echoSuppress)
             _ = speex_preprocess_ctl(ps, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, &esup)
-            var esupA: CInt = -15
+            var esupA: CInt = CInt(echoSuppressActive)
             _ = speex_preprocess_ctl(ps, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, &esupA)
-            print("speex AEC init: frame=\(frameSize) tail=\(tail) rate=\(rate)")
+            print("speex AEC init: frame=\(frameSize) tail=\(tail) rate=\(rate) esup=\(esup) esupActive=\(esupA)")
         } else {
             print("bypass 모드: AEC 없이 통과")
         }
@@ -756,6 +762,8 @@ var tailMsArg = 400
 var listDevices = false
 var farPath = ""
 var autoCal = false
+var esupArg = -40
+var esupActiveArg = -15
 let args = Array(CommandLine.arguments.dropFirst())
 var ai = 0
 while ai < args.count {
@@ -768,6 +776,8 @@ while ai < args.count {
     case "--tail": ai += 1; if ai < args.count { tailMsArg = Int(args[ai]) ?? 400 }
     case "--refdelay": ai += 1; if ai < args.count { ctx.refDelaySamples = Int((Double(args[ai]) ?? 0) * 48.0) }
     case "--autocal": autoCal = true
+    case "--esup": ai += 1; if ai < args.count { esupArg = Int(args[ai]) ?? -40 }
+    case "--esup-active": ai += 1; if ai < args.count { esupActiveArg = Int(args[ai]) ?? -15 }
     case "--farfile": ai += 1; if ai < args.count { farPath = args[ai] }
     case "--devices": listDevices = true
     default: print("알 수 없는 인자: \(a)")
@@ -906,6 +916,8 @@ func configSpkUnit(_ u: AudioUnit, device: AudioDeviceID) {
 
 let worker = SpeexAecWorker(frameSize: frameSizeArg, tailMs: tailMsArg, rate: 48000, bypass: mode == "bypass")
 worker.autoCalibrate = autoCal
+worker.echoSuppress = esupArg
+worker.echoSuppressActive = esupActiveArg
 
 must(AudioDeviceCreateIOProcID(bh16ID, bh16Proc, nil, &bh16ProcID), "BH16 IOProc")
 must(AudioDeviceStart(bh16ID, bh16ProcID), "BH16 start")
