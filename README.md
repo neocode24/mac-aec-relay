@@ -32,22 +32,64 @@ sudo killall coreaudiod      # 드라이버 인식
 
 ## 사용
 
-**릴레이를 먼저 켜고 통화한다.** 순서를 지켜야 한다. BlackHole은 통로일 뿐이라
-릴레이가 없으면 상대 목소리가 BlackHole에 들어갔다 사라진다.
+로그인하면 launchd가 릴레이를 자동으로 띄운다. 터미널을 열 필요가 없다.
+
+FaceTime 비디오 메뉴에서 한 번만 지정한다.
+
+- 마이크 = **BlackHole 2ch**
+- 출력 = **BlackHole 16ch**
+
+전화 앱은 자체 장치 메뉴가 없고 FaceTime 설정을 따라간다. 릴레이가 상시
+돌므로 통화마다 바꿀 필요가 없다.
+
+### 자동 실행 관리
+
+```bash
+launchctl print gui/$(id -u)/com.neocode24.aecrelay          # 상태
+launchctl kickstart -k gui/$(id -u)/com.neocode24.aecrelay   # 재빌드 후 반영
+launchctl bootout gui/$(id -u)/com.neocode24.aecrelay        # 정지
+tail -f ~/Library/Logs/mac-aec-relay/relay.log               # 로그
+```
+
+**릴레이를 정지하면 FaceTime도 Maono PD300X / DELL S2725QC로 되돌려야 한다.**
+BlackHole로 둔 채 릴레이가 없으면 상대 목소리가 안 들린다.
+
+### 수동 실행
 
 ```bash
 ./speexrelay --mode aec --autocal
 ```
 
-그다음 FaceTime 비디오 메뉴에서:
+## 현재 성능과 남은 문제
 
-- 마이크 = **BlackHole 2ch**
-- 출력 = **BlackHole 16ch**
+에코 억제 8-14 dB, 출력 -49에서 -71 dB (2026-09-12 실통화 실측).
+짧은 대화는 깨끗하고, **긴 대화에서 에코가 조금 남는다.**
 
-전화 앱은 자체 장치 메뉴가 없고 FaceTime 설정을 따라간다.
+원인은 둘로 좁혔다.
 
-통화가 끝나면 Ctrl-C로 릴레이를 끄고, FaceTime을 **Maono PD300X / DELL S2725QC**로
-되돌린다. BlackHole로 둔 채 릴레이를 끄면 다음 통화가 안 된다.
+1. 참조 버퍼 지연이 통화 중 움직인다 (68 -> 25 -> 36ms 관측). 캘리브레이션이
+   맞춰둔 값과 어긋나고, 말이 길어질수록 어긋남이 쌓인다.
+2. 참조가 무음인 구간(실통화 60-86%)에도 AEC를 돌려 필터가
+   "참조 없음 = 에코 없음"을 학습한다.
+
+**세 번 고쳐봤고 세 번 다 더 나빠졌다.**
+
+| 시도 | 억제량 |
+|---|---|
+| 원래 (현재 상태) | 5.6 - 9.4 dB |
+| 지연선 정합 + 필터 리셋 | 3.4 - 5.6 |
+| 리셋만 제거 | 1.8 - 5.8 |
+| 에코 꼬리 대기 후 게이팅 | 0.8 - 4.8 |
+
+분석은 맞다고 보지만 손대는 곳마다 speexdsp 내부 적응 동작과 충돌한다.
+같은 자리를 세 번 실패했으므로 speexdsp 안에서 더 파는 것은 접었다.
+다음에 손댄다면 WebRTC AEC3로 엔진을 교체하는 쪽이고, 새로 만드는 규모다.
+
+## callwatch (동작하지 않음)
+
+통화 시작을 감지해 릴레이를 켜고 끄려던 것인데, `avconferenced`가 오디오를
+잡는 순간을 1초 폴링으로 잡지 못한다. 통화 중에도 아무것도 감지하지 못했다.
+릴레이를 상시 돌리는 것으로 대체했다. 코드는 참고용으로 남긴다.
 
 상세 절차와 로그 읽는 법은 `실통화-시험-절차.md` 참조.
 
