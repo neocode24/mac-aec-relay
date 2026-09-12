@@ -1,0 +1,11 @@
+# 빌드 산출물
+speexrelay
+maecrelay
+audiodiag
+taptest
+test_minimal
+set-default-input
+set-default-output
+speexrelay_asan
+*.o
+*.dSYM/

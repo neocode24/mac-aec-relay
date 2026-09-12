@@ -1,0 +1,5 @@
+module CSpeexDsp [system] {
+    header "speex_echo.h"
+    header "speex_preprocess.h"
+    export *
+}
