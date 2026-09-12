@@ -9,3 +9,4 @@ set-default-output
 speexrelay_asan
 *.o
 *.dSYM/
+callwatch
