@@ -362,7 +362,9 @@ let micInputProc: AURenderCallback = { _, ioActionFlags, inTimeStamp, _, inNumbe
 // BH16 IOProc: 루프백 입력(전화앱이 BH16에 쓴 신호)을 참조 두 곳으로
 // + 측정 모드에서는 우리가 far 음성을 BH16 출력에 쓴다(루프백 발생용)
 var gFarWriteFrames = 0
+var gBh16CbCount = 0
 let bh16Proc: AudioDeviceIOProc = { _, _, inInputData, _, inOutputData, _, _ in
+    gBh16CbCount += 1
     let inp = inInputData
     let frames = framesOf(UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inp)))
     if frames > 0 {
@@ -391,7 +393,9 @@ let bh16Proc: AudioDeviceIOProc = { _, _, inInputData, _, inOutputData, _, _ in
 }
 
 // BH2 IOProc: AEC 결과를 전화앱 마이크로
+var gBh2CbCount = 0
 let bh2Proc: AudioDeviceIOProc = { _, _, _, _, inOutputData, _, _ in
+    gBh2CbCount += 1
     let out = inOutputData
     let frames = framesOf(UnsafeMutableAudioBufferListPointer(out))
     if frames > 0 {
@@ -945,16 +949,62 @@ print("RUNNING")
 
 let t0 = Date()
 var tick = 0
+// 오디오 콜백 정지 감시 (2026-09-20 추가)
+//
+// 장치가 목록에서 사라지면(HDMI 모니터 절연, coreaudiod 재시작 등) IOProc이
+// 불리지 않는데 프로세스는 살아 있어 로그만 찍는다. 실제로 4시간 45분간
+// 통화 불가 상태로 방치된 사고가 있었다(2026-09-20).
+//
+// 30초마다 네 콜백 카운터를 검사해 하나라도 증가하지 않으면 exit(1)로
+// 종료한다. launchd KeepAlive가 새 프로세스를 띄우고, 새 프로세스는 그
+// 시점의 장치 목록에서 UID를 다시 해석하므로 살아 있는 장치에 붙는다.
+//
+// 무음에서도 IOProc은 하드웨어/가상 클럭으로 계속 불리므로 정상 동작 중
+// 카운터가 멈출 일은 없다. 기동 직후 30초 미만 구간은 첫 검사가 t=30s라
+// 자연히 제외된다.
+let cbStallSeconds = 30.0
+var lastCbCheck = Date()
+var lastMicCb = gMicCbCount
+var lastSpkCb = gSpkCbCount
+var lastBh16Cb = gBh16CbCount
+var lastBh2Cb = gBh2CbCount
 while gRunning {
     Thread.sleep(forTimeInterval: 1.0)
     tick += 1
     if !gRunning { break }
     if duration > 0 && Date().timeIntervalSince(t0) >= duration { break }
+    let now = Date()
+    let elapsedSinceCheck = now.timeIntervalSince(lastCbCheck)
+    if elapsedSinceCheck >= cbStallSeconds {
+        // 검사는 1초 틱에서 실행되므로 정상 elapsed는 30~31초다. 35초를 넘으면
+        // 루프 자체가 얼어 있었다는 뜻(시스템 잠자기). 깨어난 직후엔 IOProc이
+        // 아직 재개 전일 수 있으므로 판단하지 않고 기준만 다시 잡는다.
+        if elapsedSinceCheck >= cbStallSeconds + 5.0 {
+            lastMicCb = gMicCbCount
+            lastSpkCb = gSpkCbCount
+            lastBh16Cb = gBh16CbCount
+            lastBh2Cb = gBh2CbCount
+            lastCbCheck = now
+        } else if gMicCbCount == lastMicCb || gSpkCbCount == lastSpkCb
+            || gBh16CbCount == lastBh16Cb || gBh2CbCount == lastBh2Cb {
+            let msg = String(format: "FATAL: 오디오 콜백 정지 %.0f초 (micCb=%d spkCb=%d bh16Cb=%d bh2Cb=%d) — 프로세스 종료, launchd가 재시작",
+                             cbStallSeconds, gMicCbCount, gSpkCbCount, gBh16CbCount, gBh2CbCount)
+            print(msg)
+            FileHandle.standardError.write((msg + "\n").data(using: .utf8)!)
+            exit(1)
+        } else {
+            lastMicCb = gMicCbCount
+            lastSpkCb = gSpkCbCount
+            lastBh16Cb = gBh16CbCount
+            lastBh2Cb = gBh2CbCount
+            lastCbCheck = now
+        }
+    }
     if tick % 2 == 0 {
         let (mp, mr, _) = ctx.micMeter.drain()
         let (rp, rr, _) = ctx.refMeter.drain()
         let (op, orr, _) = ctx.outMeter.drain()
-        print(String(format: "[%3ds] mic %7.1f/%7.1f  ref %7.1f/%7.1f  out %7.1f/%7.1f  aecFrames=%d refZero=%d  underrun bh2=%d spk=%d  ring mic=%d ref=%d(%.0fms drop=%d) refSpk=%d(%.0fms drop=%d) out=%d  micCb=%d micFrames=%d(last=%d) micErr=%d spkCb=%d farW=%d",
+        print(String(format: "[%3ds] mic %7.1f/%7.1f  ref %7.1f/%7.1f  out %7.1f/%7.1f  aecFrames=%d refZero=%d  underrun bh2=%d spk=%d  ring mic=%d ref=%d(%.0fms drop=%d) refSpk=%d(%.0fms drop=%d) out=%d  micCb=%d micFrames=%d(last=%d) micErr=%d spkCb=%d bh16Cb=%d bh2Cb=%d farW=%d",
                      tick, mp, mr, rp, rr, op, orr,
                      ctx.aecFrames, ctx.aecRefZeroFrames,
                      ctx.bh2Underruns, ctx.spkUnderruns,
@@ -962,7 +1012,7 @@ while gRunning {
                      ctx.ringRef.available, Double(ctx.ringRef.available) / 48.0, ctx.refDropped,
                      ctx.ringRefSpk.available, Double(ctx.ringRefSpk.available) / 48.0, gSpkDropped,
                      ctx.ringOut.available,
-                     gMicCbCount, gMicTotalFrames, gMicLastCbFrames, gMicRenderErrCount, gSpkCbCount, gFarWriteFrames))
+                     gMicCbCount, gMicTotalFrames, gMicLastCbFrames, gMicRenderErrCount, gSpkCbCount, gBh16CbCount, gBh2CbCount, gFarWriteFrames))
     }
 }
 
