@@ -26,7 +26,7 @@ your microphone.
 macOS ships an echo canceller (`AUVoiceProcessingIO`), but an application has to
 opt into it. FaceTime and the Phone app do not expose that choice, and driving
 the unit directly turns out to be blocked three separate ways — all three
-documented in [구조와-배경.md](구조와-배경.md).
+documented in [Architecture and background](docs/en/architecture.md).
 
 This relay sits between the devices instead. It reads the microphone, reads what
 the call app is playing, subtracts the echo with speexdsp, and hands the cleaned
@@ -201,8 +201,8 @@ launchd brings it back with counters rising again.
 
 | Document | Contents |
 |---|---|
-| [구조와-배경.md](구조와-배경.md) | Why echo happens, why VPIO is unreachable, signal flow, code structure, traps hit while building this |
-| [실통화-시험-절차.md](실통화-시험-절차.md) | Running a real-call test and reading the log |
+| [Architecture and background](docs/en/architecture.md) | Why echo happens, why VPIO is unreachable, signal flow, code structure, traps hit while building this |
+| [Testing on a real call](docs/en/testing.md) | Running a real-call test and reading the log |
 
 ## Measurement tools
 
