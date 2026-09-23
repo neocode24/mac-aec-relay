@@ -707,7 +707,7 @@ final class SpeexAecWorker {
                     if pd != ctx.refDelaySamples {
                         ctx.refDelaySamples = pd
                         refDelayBuf = [Float32](repeating: 0, count: max(0, pd))
-                        if let es = st { _ = speex_echo_state_reset(es) }
+                        if let es = st { speex_echo_state_reset(es) }
                         print(String(format: "refdelay 적용: %d samples (%.1f ms) — AEC 상태 리셋",
                                      pd, Double(pd) / 48.0))
                     }
