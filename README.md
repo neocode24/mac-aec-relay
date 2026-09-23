@@ -1,242 +1,234 @@
+<div align="center">
+
+<img src="docs/assets/icon.png" width="160" alt="mac-aec-relay" />
+
 # mac-aec-relay
 
-macOS 전화 앱/FaceTime 통화의 에코를 제거하는 중계 프로그램.
+**Acoustic echo cancellation for macOS calls, without a paid service**
 
-애플 통화 스택(`avconferenced`)은 이 구성에서 AEC를 하지 않는다. 마이크 모드
-"음성 분리"도 FaceTime에서는 선택 불가(회색)다. 그래서 마이크 신호를 가로채
-speexdsp AEC로 에코를 지운 뒤 가상 마이크로 되돌려준다.
+[![Platform](https://img.shields.io/badge/macOS-14%2B-blue?style=flat-square&logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/swift-5.9%2B-orange?style=flat-square&logo=swift&logoColor=white)](https://swift.org)
+[![speexdsp](https://img.shields.io/badge/speexdsp-BSD--3-green?style=flat-square)](https://gitlab.xiph.org/xiph/speexdsp)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
 
-## 신호 흐름
+**Language** · English · [한국어](docs/ko-KR/README.md) · [日本語](docs/ja-JP/README.md)
+
+</div>
+
+---
+
+## What this is
+
+Take a call on a Mac with external speakers and the other side hears themselves
+come back. Their voice leaves your speakers, bounces off the room, and re-enters
+your microphone.
+
+macOS ships an echo canceller (`AUVoiceProcessingIO`), but an application has to
+opt into it. FaceTime and the Phone app do not expose that choice, and driving
+the unit directly turns out to be blocked three separate ways — all three
+documented in [구조와-배경.md](구조와-배경.md).
+
+This relay sits between the devices instead. It reads the microphone, reads what
+the call app is playing, subtracts the echo with speexdsp, and hands the cleaned
+signal back through a virtual device.
+
+> **Honest status:** this reduces echo, it does not eliminate it. Measured 8-14 dB
+> of suppression on real calls. The person on the other end went from "there's an
+> echo" to "it's fine now", and that is where the work stopped. See
+> [Results](#results) for what is and isn't verified.
+
+## How it works
 
 ```
-전화앱 출력 → BlackHole 16ch → [릴레이가 읽어 DELL로 재생]
-                                      ↓ 같은 신호가 AEC 참조
-Maono PD300X → [speexdsp AEC] → BlackHole 2ch → 전화앱 마이크
+  microphone ─────────────┐
+                          ├──► [ speexrelay ] ──► BlackHole 2ch ──► call app mic
+  BlackHole 16ch ─────────┘         │
+       ▲                            └────────────► speakers
+       │
+  call app output
 ```
 
-## 사전 준비
+Two virtual devices are needed because the signal crosses the app boundary
+twice: once to capture what the call app plays (the reference for cancellation),
+once to hand back the cleaned microphone signal.
+
+Cancellation only works if the reference lines up in time with the echo in the
+mic. The relay measures that offset by cross-correlation during the first
+seconds of a call and applies it while running.
+
+## Install
 
 ```bash
 brew install speexdsp
 brew install --cask blackhole-2ch blackhole-16ch
-sudo killall coreaudiod      # 드라이버 인식
+sudo killall coreaudiod          # so the new drivers are picked up
 ```
 
-## 빌드
-
 ```bash
+git clone https://github.com/neocode24/mac-aec-relay.git
+cd mac-aec-relay
 ./build_speex.sh
+./install.sh                     # registers a launchd agent and starts it
 ```
 
-`speexrelay` 실행 파일이 생긴다.
+`./install.sh -u` removes it. Logs land in `~/Library/Logs/mac-aec-relay/`.
 
-## 사용
+### Point your call app at it
 
-로그인하면 launchd가 릴레이를 자동으로 띄운다. 터미널을 열 필요가 없다.
+In FaceTime → Settings, set **Microphone** to `BlackHole 2ch` and **Output** to
+`BlackHole 16ch`. The Phone app follows FaceTime's choice, so this is done once.
 
-FaceTime 비디오 메뉴에서 한 번만 지정한다.
+> **Careful:** while the call app points at BlackHole, the relay has to be
+> running. Stop the relay without changing those settings back and the other
+> side goes silent.
 
-- 마이크 = **BlackHole 2ch**
-- 출력 = **BlackHole 16ch**
+## Usage
 
-전화 앱은 자체 장치 메뉴가 없고 FaceTime 설정을 따라간다. 릴레이가 상시
-돌므로 통화마다 바꿀 필요가 없다.
-
-### 자동 실행 관리
+The launchd agent keeps it running, so day to day there is nothing to do. For
+measurement and debugging it also runs directly:
 
 ```bash
-launchctl print gui/$(id -u)/com.neocode24.aecrelay          # 상태
-launchctl kickstart -k gui/$(id -u)/com.neocode24.aecrelay   # 재빌드 후 반영
-launchctl bootout gui/$(id -u)/com.neocode24.aecrelay        # 정지
-tail -f ~/Library/Logs/mac-aec-relay/relay.log               # 로그
+./speexrelay --mode aec --autocal          # normal operation
+./speexrelay --mode bypass                 # pass through, for A/B comparison
+./speexrelay --devices                     # list devices and their UIDs
 ```
 
-**릴레이를 정지하면 FaceTime도 Maono PD300X / DELL S2725QC로 되돌려야 한다.**
-BlackHole로 둔 채 릴레이가 없으면 상대 목소리가 안 들린다.
-
-### 수동 실행
+Devices default to the system input and output. Override by name fragment or UID:
 
 ```bash
-./speexrelay --mode aec --autocal
+./speexrelay --mode aec --autocal --mic Maono --spk DELL
+AEC_MIC_UID=... AEC_SPK_UID=... ./speexrelay --mode aec --autocal
 ```
 
-## 현재 성능과 남은 문제
-
-측정 모드에서 47 dB 억제(참조 -10 dB, 출력 -57 dB, 35초 실제 음성).
-실통화에서는 8-14 dB. **짧은 대화는 깨끗하고 긴 대화에서 에코가 조금 남는다.**
-
-### 왜 측정과 실통화가 다른가
-
-**측정에 더블토크가 없었다.** 기존 측정은 참조(상대 목소리)만 울리고 사용자는
-말하지 않는 조건이라 필터가 쉽게 수렴한다. 실통화는 둘이 동시에 말하고,
-그때 적응 필터가 사용자 목소리를 에코로 오인해 어긋난다.
-
-이걸 재현하는 `pm_doubletalk.sh`를 만들었다. 상대 목소리는 릴레이의
-`--farfile`로 DELL에 내보내고(참조에 들어감), 사용자 목소리는 기본 출력을
-Mac mini 스피커로 돌려 `say`로 낸다(참조에 없음). 마이크가 둘 다 주워담아
-더블토크가 된다.
-
-측정 결과 (더블토크 8-30초 구간 rms):
-
-| esupActive | 상대만 | 더블토크 |
+| Option | Default | What it does |
 |---|---|---|
-| -15 (기본) | -48.7 | -48.9 |
-| -30 | -51.3 | -48.4 |
+| `--mode aec\|bypass` | `aec` | Cancel, or pass through unchanged |
+| `--autocal` | off | Measure reference delay during the call. Required in practice |
+| `--refdelay <ms>` | 0 | Set that delay by hand instead |
+| `--tail <ms>` | 400 | Filter length; how long an echo it can model |
+| `--frame <n>` | 480 | Samples per processing block |
+| `--esup <dB>` | -40 | Residual suppression while nobody talks |
+| `--esup-active <dB>` | -15 | Residual suppression while the far side talks |
+| `--mic`, `--spk` | system default | Device by UID or name fragment |
+| `--duration <s>` | until Ctrl-C | Stop after N seconds |
+| `--record <path>` | off | Write output as f32le mono 48k |
+| `--farfile <path>` | off | Play a file as the reference, for bench measurement |
+| `--devices` | — | List devices and exit |
 
-두 값의 차이가 없다. 잔여 에코 억제기 세기는 원인이 아니다.
--45와 -60은 측정 전에 중단했다.
+### Managing the agent
 
-### 시도했다가 되돌린 것
+```bash
+launchctl print    gui/$(id -u)/com.neocode24.aecrelay   # status
+launchctl kickstart -k gui/$(id -u)/com.neocode24.aecrelay   # reload after rebuild
+launchctl bootout  gui/$(id -u)/com.neocode24.aecrelay   # stop
+tail -f ~/Library/Logs/mac-aec-relay/relay.log
+```
 
-참조 지연이 통화 중 움직이는 것(68 -> 25 -> 36ms)과 무음 구간 오학습을
-고치려 했으나 세 번 모두 억제량이 떨어져 되돌렸다.
-
-| 시도 | 억제량 |
-|---|---|
-| 원래 (현재 상태) | 5.6 - 9.4 dB |
-| 지연선 정합 + 필터 리셋 | 3.4 - 5.6 |
-| 리셋만 제거 | 1.8 - 5.8 |
-| 에코 꼬리 대기 후 게이팅 | 0.8 - 4.8 |
-
-버퍼 크기도 마찬가지다. 지연과 억제량이 맞바꾸는 관계다.
-
-| refMaxBacklog / spkMaxBacklog | 억제량 |
-|---|---|
-| 100ms / 100ms (현재) | 8 - 14 dB |
-| 50ms / 40ms | 1 - 3 |
-| 100ms / 40ms | 3 - 7 |
-
-`spkMaxBacklog`에서 버리는 샘플이 곧 스피커로 나가는 신호이고 그것이 마이크로
-되돌아오는 에코의 원본이다. 버리면 AEC가 학습한 경로가 어긋난다.
-
-### 다음에 손댄다면
-
-speexdsp의 더블토크 처리가 약한 것이 남은 병목으로 보인다. 라이브러리 안에서
-파라미터로 풀리는 문제가 아니었다. WebRTC AEC3로 엔진을 교체하는 쪽이고,
-새로 만드는 규모다.
-
-## callwatch (동작하지 않음)
-
-통화 시작을 감지해 릴레이를 켜고 끄려던 것인데, `avconferenced`가 오디오를
-잡는 순간을 1초 폴링으로 잡지 못한다. 통화 중에도 아무것도 감지하지 못했다.
-릴레이를 상시 돌리는 것으로 대체했다. 코드는 참고용으로 남긴다.
-
-## 더 읽을 것
-
-- `구조와-배경.md` — 에코가 생기는 원리, macOS AEC가 막힌 이유, 신호 흐름,
-  코드 구조, 오늘 밟은 함정 여섯 개. 다시 손대기 전에 읽는다.
-- `실통화-시험-절차.md` — 실통화 시험 절차와 로그 읽는 법.
-
-## 옵션
-
-| 옵션 | 설명 |
-| --- | --- |
-| `--mode aec\|bypass` | bypass는 AEC 없이 통과. 대조 측정용 |
-| `--autocal` | 참조 지연 자동 보정. 실통화에서는 필수 |
-| `--refdelay <ms>` | 지연을 수동 지정 (autocal 미사용 시) |
-| `--duration <초>` | 생략하면 Ctrl-C까지 실행 |
-| `--frame <샘플>` | AEC 프레임 크기 (기본 480) |
-| `--tail <ms>` | 필터 길이 (기본 400) |
-| `--farfile <경로>` | f32 mono 48k 파일을 BH16에 재생. 통화 없이 측정할 때 |
-| `--record <경로>` | BH2 출력을 f32로 기록 |
-| `--devices` | 장치 목록만 출력 |
-
-## 로그 읽기
+## Reading the log
 
 ```
 [ 54s] mic -51.6/-70.0  ref -15.2/-32.9  out -64.7/-83.8  aecFrames=5348 refZero=3762
        ring mic=0 ref=4288(89ms drop=8992) refSpk=512(11ms drop=22336) out=832
 ```
 
-- `mic` 마이크 원본, `ref` 참조 신호, `out` AEC 처리 후 (peak/rms)
-- **상대만 말하는 구간에서 mic 대비 out이 얼마나 낮은가**가 에코 억제량이다
-- 본인이 말하는 구간은 억제량이 0에 가까운 것이 정상 (목소리를 지우면 안 된다)
-- `ref=N(Xms ...)` 참조 지연. 100ms 근처 고정이어야 한다
-- `refSpk=N(Xms ...)` 스피커 출력 지연. 늘어나면 상대 목소리가 느려진다
-- `micCb`/`spkCb`/`bh16Cb`/`bh2Cb` 네 콜백 카운터. 정상이면 전부 계속 오른다.
-  하나라도 고정되면 그 경로가 죽은 것이고 30초 후 프로세스가 스스로 종료된다.
-- `underrun` 0이 아니면 소리가 끊긴다
+- `mic` raw microphone, `ref` reference, `out` after cancellation (peak/rms)
+- **Suppression is `mic` minus `out` while only the far side is talking.**
+  While you talk it should be near zero — your voice must not be removed.
+- `ref=N(Xms)` reference delay, should sit near 100 ms
+- `refSpk=N(Xms)` speaker output delay; growth here means the far side sounds late
+- `micCb`/`spkCb`/`bh16Cb`/`bh2Cb` four callback counters, all should keep rising
+- `underrun` non-zero means audio is dropping out
 
-시작 시 `정합 캘리브레이션: 신호 대기 중`이 뜨고, 상대가 말하기 시작하면
-`lag=... corr=...` 과 `refdelay 적용:` 두 줄이 나온다. **이게 안 나오면 지연 보정
-없이 도는 것이고 에코가 거의 안 지워진다.**
+At startup you get `정합 캘리브레이션: 신호 대기 중`, and once the far side speaks,
+a `lag=... corr=...` line followed by `refdelay 적용:`. **Without those two lines
+the relay is running uncalibrated and cancels almost nothing.**
 
-## 실측 성능 (2026-09-12 실통화)
+## Results
 
-상대만 말하는 구간(에코만 존재):
+Measured 2026-09-12 on the machine this was built for.
 
-| ref | mic | out | 억제량 |
-| --- | --- | --- | --- |
+| Condition | Suppression (mic → out) |
+|---|---|
+| Real call | 8-14 dB |
+| Bench, far side only | 5.6-9.4 dB |
+| Bench, both talking | -0.6 to 10.8 dB |
+
+Real-call detail, far side talking only:
+
+| ref | mic | out | suppression |
+|---|---|---|---|
 | −1.0 | −39.5 | −49.0 | 9.5 |
-| −5.3 | −41.9 | −51.4 | 9.5 |
 | −15.2 | −51.6 | −64.7 | 13.1 |
-| −19.0 | −56.6 | −65.2 | 8.6 |
 | −22.0 | −56.5 | −71.2 | 14.7 |
 
-목표는 out −50 dB 이하였고 −64 ~ −71 dB에 도달했다. 통화 상대 확인으로 에코 없음.
+The three conditions are close, and that matters: an early conclusion that
+double-talk was the bottleneck did **not** survive re-measurement on a consistent
+basis. What actually limits suppression here is still unidentified.
 
-## 개발 중 밟은 함정
+### Known to make it worse
 
-같은 문제를 다시 만나면 여기부터 보라.
+Both verified by reverting them.
 
-**무음과 AEC 성공은 측정값이 같다.** 스피커가 실제로 울리는지 먼저 확인하지 않으면
-"에코가 사라졌다"와 "소리가 안 났다"를 구분할 수 없다. 이 프로젝트에서 세 번 오판했다.
-`--mode bypass` 대조군에서 억제량이 정확히 0인지 보는 것이 확실한 검사다.
+| Change | Suppression |
+|---|---|
+| Current settings | 8-14 dB |
+| Reference + speaker buffers 100 ms → 50/40 ms | 1-3 dB |
+| Speaker buffer alone 100 → 40 ms | 3-7 dB |
+| Realign delay line and reset the filter on gaps | 3.4-5.6 dB |
+| Gate the output after a silent reference tail | 0.8-4.8 dB |
 
-**`afplay`의 `-d`는 device가 아니라 debug다.** afplay에는 출력 장치를 고르는 옵션이
-없다. `afplay -d "BlackHole 16ch"`는 그냥 기본 출력으로 재생된다. 특정 장치로 보내려면
-릴레이의 `--farfile`을 쓴다.
+The samples those buffers hold **are** the echo the filter needs. Drop them and
+the path it learned no longer matches. Tune output latency with `bh2MaxBacklog`,
+which is not part of the cancellation path.
 
-**다채널 장치를 모노로 접을 때 전체 채널로 나누면 안 된다.** BlackHole 16ch는 앞
-2채널에만 신호가 있어서, 16으로 나누면 −18 dB가 빠진다. 실통화에서 상대 목소리가
-작게 들리고, 스피커가 조용해져 에코가 준 것을 AEC 효과로 오인하게 만든다.
+## Self-recovery
 
-**모든 링버퍼에 백로그 상한이 필요하다.** 하나라도 빠지면 그 경로의 지연이 단조
-증가한다. 스피커 버퍼가 그랬고 352ms에서 651ms까지 늘어 "목소리가 느리다"가 됐다.
-`min(a, b)` 기준으로 판정하면 한쪽이 비었을 때 안 걸리므로 각 버퍼를 따로 봐야 한다.
+Audio devices can vanish — an HDMI monitor sleeps, `coreaudiod` restarts — and
+when they do, IOProc callbacks stop while the process stays alive and keeps
+logging. This once left the relay silently broken for 4h45m.
 
-**캘리브레이션은 신호가 있을 때 해야 한다.** 시작 직후 1회만 재면 실통화에서는 늘
-실패한다. 통화를 걸어도 그 순간엔 상대가 말하지 않기 때문이다. 측정 모드는 테스트
-음성이 즉시 재생돼 이 문제가 드러나지 않는다.
+It now checks all four callback counters every 30 seconds and calls `exit(1)` if
+any one of them stopped rising. launchd starts a fresh process, which re-resolves
+device UIDs against whatever is present. The check looks only at counters, never
+at dB values, because silence and successful cancellation measure the same. It
+skips the first 30 seconds and any interval longer than 35 seconds, so waking
+from sleep does not trigger it.
 
-**콜백이 멈추면 프로세스를 죽여야 한다.** 장치가 목록에서 사라지면(HDMI 모니터 절연,
-coreaudiod 재시작 등) IOProc이 불리지 않는데 프로세스는 살아 있어 로그만 찍는다.
-실제로 2026-09-20에 4시간 45분간 통화 불가 상태로 방치됐다. 이때 마이크 콜백은
-살아 있고 스피커/BlackHole 콜백만 죽는, 부분 정지 형태였다. 그래서 릴레이는 30초마다
-네 콜백 카운터(micCb/spkCb/bh16Cb/bh2Cb)를 검사해 **하나라도 증가하지 않으면
-`exit(1)`로 스스로 죽는다.** launchd KeepAlive가 새 프로세스를 띄우고, 새 프로세스는
-그 시점 장치 목록에서 UID를 다시 해석해 살아 있는 장치에 붙는다. 판정 기준은 카운터
-증가 여부뿐이며 dB 값은 보지 않는다(무음과 AEC 성공은 측정값이 같으므로). 기동
-직후 30초 이내와 잠자기에서 깨어난 직후(검사 간격 35초 초과)에는 판정하지 않는다.
-재현 검증: `sudo killall -9 coreaudiod`로 죽이면 30초 내 프로세스가 자결하고 launchd가
-새 PID로 되살리며 카운터가 다시 오르는 것을 확인했다(2026-09-20).
+Verified by `sudo killall -9 coreaudiod`: the process exits within 30 seconds and
+launchd brings it back with counters rising again.
 
-**애플 VoiceProcessingIO(VPIO)는 이 용도로 못 쓴다.** 실측으로 확인한 것들:
-- AEC 참조는 그 유닛 자신의 output bus 신호뿐이다. 다른 프로세스가 스피커로 보낸
-  소리는 참조에 안 들어간다
-- `kAudioOutputUnitProperty_CurrentDevice`에 Aggregate Device를 주면 `-10851`로 거부
-- 입력과 출력 장치를 따로 지정할 수 없다
+## Documentation
 
-**Core Audio process tap도 안 됐다.** `AudioHardwareCreateProcessTap`은 성공하는데
-오디오 콜백이 한 번도 안 불린다. 서명 없는 CLI 바이너리라 시스템 오디오 캡처 권한이
-없는 것으로 보인다. 앱 번들 + 코드 서명 + entitlement가 필요하다.
+| Document | Contents |
+|---|---|
+| [구조와-배경.md](구조와-배경.md) | Why echo happens, why VPIO is unreachable, signal flow, code structure, traps hit while building this |
+| [실통화-시험-절차.md](실통화-시험-절차.md) | Running a real-call test and reading the log |
 
-## 파일
+## Measurement tools
 
-| 파일 | 용도 |
-| --- | --- |
-| `speexrelay.swift` | 본체 |
-| `build_speex.sh` | 빌드 |
-| `CSpeexDsp/` | speexdsp 모듈맵 |
-| `실통화-시험-절차.md` | 통화 시험 절차와 로그 읽는 법 |
-| `pm_verify_autocal.sh` | bypass 대비 억제량 측정 |
-| `pm_delay_probe.py` | 상호상관으로 실제 에코 지연 측정 |
-| `pm_delay_sweep.sh` | refdelay 값별 억제량 훑기 |
-| `pm_gain_verify3.sh` | 릴레이 경유 재생의 게인 손실 검사 |
-| `maecrelay.swift` | VPIO 시절 구현. 참고용, 동작하지 않음 |
+Included because the measurement rig is most of the work — and because the first
+version of it was wrong in a way that cost three failed fixes.
 
-## 환경
+| Script | Purpose |
+|---|---|
+| `pm_verify_autocal.sh` | A/B against bypass mode |
+| `pm_doubletalk.sh` | Both sides talking at once |
+| `pm_delay_probe.py` | Cross-correlation delay measurement |
+| `pm_delay_sweep.sh` | Sweep suppression across `--refdelay` values |
+| `pm_split_measure.py` | Per-segment levels, to see drift across a long utterance |
 
-Mac mini (Mac16,11), macOS 26.6.2. 마이크 Maono PD300X(USB 다이내믹),
-스피커 DELL S2725QC(HDMI). 장치 UID는 소스에 상수로 박혀 있으므로 다른 환경에서는
-`--devices`로 확인해 수정해야 한다.
+## Limitations
+
+- Built and verified on one machine. Treat the numbers as a starting point.
+- Echo is reduced, not removed.
+- Start-on-call detection was attempted and abandoned: `avconferenced` does not
+  claim audio devices in a way that polling can detect. The relay runs continuously.
+- Only FaceTime and the Phone app are routed. Teams, Slack and others have their
+  own cancellation and are left alone.
+
+## License
+
+[MIT](LICENSE) © 2026 neocode24
+
+Uses [speexdsp](https://gitlab.xiph.org/xiph/speexdsp) (BSD 3-Clause). Headers are
+read from the Homebrew install; none are vendored in this repository.

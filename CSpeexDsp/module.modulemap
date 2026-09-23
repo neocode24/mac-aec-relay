@@ -1,5 +1,9 @@
+// speexdsp 헤더를 Swift에서 쓰기 위한 모듈 선언.
+//
+// 헤더 자체는 복사하지 않고 Homebrew가 설치한 것을 가리킨다.
+// 경로가 다르면 build_speex.sh의 -I 옵션을 고친다.
 module CSpeexDsp [system] {
-    header "speex_echo.h"
-    header "speex_preprocess.h"
+    header "/opt/homebrew/include/speex/speex_echo.h"
+    header "/opt/homebrew/include/speex/speex_preprocess.h"
     export *
 }

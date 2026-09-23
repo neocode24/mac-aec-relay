@@ -97,6 +97,22 @@ func uidToID(_ uid: String) -> AudioObjectID? {
     return nil
 }
 
+/// 시스템 기본 입력 또는 출력 장치.
+/// 장치를 지정하지 않았을 때의 기본값으로 쓴다.
+func defaultDevice(input: Bool) -> AudioObjectID? {
+    var prop = AudioObjectPropertyAddress(
+        mSelector: input ? kAudioHardwarePropertyDefaultInputDevice
+                         : kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var id = AudioObjectID(0)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                     &prop, 0, nil, &size, &id) == noErr,
+          id != 0 else { return nil }
+    return id
+}
+
 func nominalRate(_ id: AudioObjectID) -> Float64 {
     var prop = AudioObjectPropertyAddress(
         mSelector: kAudioDevicePropertyNominalSampleRate,
@@ -768,6 +784,8 @@ var farPath = ""
 var autoCal = false
 var esupArg = -40
 var esupActiveArg = -15
+var micArg = ""
+var spkArg = ""
 let args = Array(CommandLine.arguments.dropFirst())
 var ai = 0
 while ai < args.count {
@@ -782,6 +800,8 @@ while ai < args.count {
     case "--autocal": autoCal = true
     case "--esup": ai += 1; if ai < args.count { esupArg = Int(args[ai]) ?? -40 }
     case "--esup-active": ai += 1; if ai < args.count { esupActiveArg = Int(args[ai]) ?? -15 }
+    case "--mic": ai += 1; if ai < args.count { micArg = args[ai] }
+    case "--spk": ai += 1; if ai < args.count { spkArg = args[ai] }
     case "--farfile": ai += 1; if ai < args.count { farPath = args[ai] }
     case "--devices": listDevices = true
     default: print("알 수 없는 인자: \(a)")
@@ -799,15 +819,53 @@ if listDevices {
 ctx.mode = mode
 guard mode == "aec" || mode == "bypass" else { fail("알 수 없는 모드: \(mode) (aec|bypass)") }
 
-let micUID = "AppleUSBAudioEngine:ShenZhen Maono Technology Co., Ltd.:Maono Dynamic Microphone:SERIAL:1,2"
-let spkUID = "DISPLAY-UID"
+// 장치 선택.
+//
+// 우선순위: 명령행 인자 > 환경변수 > 시스템 기본 장치.
+// 하드코딩하지 않는 이유는 기기마다 UID가 다르기 때문이다.
+// UID 목록은 `--devices`로 확인한다.
+//
+//   --mic <UID|이름조각>   환경변수 AEC_MIC_UID    기본: 시스템 기본 입력
+//   --spk <UID|이름조각>   환경변수 AEC_SPK_UID    기본: 시스템 기본 출력
+//
+// BlackHole 두 벌은 고정 UID라 그대로 쓴다.
 let bh2UID = "BlackHole2ch_UID"
 let bh16UID = "BlackHole16ch_UID"
 
-guard let micID = uidToID(micUID) else { fail("마이크(Maono)를 못 찾음") }
-guard let spkID = uidToID(spkUID) else { fail("스피커(DELL)를 못 찾음") }
-guard let bh2ID = uidToID(bh2UID) else { fail("BlackHole 2ch를 못 찾음") }
-guard let bh16ID = uidToID(bh16UID) else { fail("BlackHole 16ch를 못 찾음") }
+/// UID로 먼저 찾고, 못 찾으면 장치 이름에 포함된 문자열로 찾는다.
+/// 이름 조각을 허용하는 이유는 UID가 길고 기기마다 달라서다.
+func resolveDevice(_ hint: String) -> AudioDeviceID? {
+    if let id = uidToID(hint) { return id }
+    let lowered = hint.lowercased()
+    for id in allDeviceIDs() {
+        if let name = deviceName(id), name.lowercased().contains(lowered) { return id }
+    }
+    return nil
+}
+
+let micHint = micArg.isEmpty ? ProcessInfo.processInfo.environment["AEC_MIC_UID"] ?? "" : micArg
+let spkHint = spkArg.isEmpty ? ProcessInfo.processInfo.environment["AEC_SPK_UID"] ?? "" : spkArg
+
+let micID: AudioDeviceID
+if micHint.isEmpty {
+    guard let id = defaultDevice(input: true) else { fail("기본 입력 장치를 못 찾음") }
+    micID = id
+} else {
+    guard let id = resolveDevice(micHint) else { fail("마이크를 못 찾음: \(micHint) (--devices로 확인)") }
+    micID = id
+}
+
+let spkID: AudioDeviceID
+if spkHint.isEmpty {
+    guard let id = defaultDevice(input: false) else { fail("기본 출력 장치를 못 찾음") }
+    spkID = id
+} else {
+    guard let id = resolveDevice(spkHint) else { fail("스피커를 못 찾음: \(spkHint) (--devices로 확인)") }
+    spkID = id
+}
+
+guard let bh2ID = uidToID(bh2UID) else { fail("BlackHole 2ch를 못 찾음 (brew install blackhole-2ch)") }
+guard let bh16ID = uidToID(bh16UID) else { fail("BlackHole 16ch를 못 찾음 (brew install blackhole-16ch)") }
 
 for (id, name) in [(micID, "mic"), (spkID, "spk"), (bh2ID, "bh2"), (bh16ID, "bh16")] {
     let st = setNominalRate(id, 48000)

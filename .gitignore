@@ -1,12 +1,12 @@
 # 빌드 산출물
 speexrelay
-maecrelay
-audiodiag
-taptest
-test_minimal
 set-default-input
 set-default-output
-speexrelay_asan
 *.o
 *.dSYM/
-callwatch
+
+# 녹음과 측정 결과
+*.f32
+*.wav
+*.aiff
+*.log

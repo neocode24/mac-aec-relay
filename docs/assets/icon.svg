@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#18142e"/>
+      <stop offset="100%" stop-color="#0c0a1c"/>
+    </linearGradient>
+    <linearGradient id="waveIn" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ccc5e8"/>
+      <stop offset="100%" stop-color="#9b8fd0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+
+  <!-- Ambient glow, centered -->
+  <ellipse cx="512" cy="512" rx="360" ry="215" fill="#3a2f60" opacity="0.22"/>
+
+  <!-- Incoming voice: loud, irregular, fills the left half -->
+  <path d="M 150,512
+           Q 186,344 222,512
+           Q 258,684 294,512
+           Q 330,318 366,512
+           Q 402,668 438,512"
+        stroke="url(#waveIn)" stroke-width="26" fill="none"
+        stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+
+  <!-- Clean output: a straight line, nothing drawn on top of it -->
+  <path d="M 586,512 L 812,512"
+        stroke="#ffffff" stroke-width="26" fill="none" stroke-linecap="round"/>
+
+  <!-- Cancel point: opaque disc so the wave visibly stops here -->
+  <circle cx="512" cy="512" r="74" fill="#0c0a1c"/>
+  <circle cx="512" cy="512" r="74" fill="none" stroke="#e8e0ff"
+          stroke-width="12" opacity="0.95" filter="url(#glow)"/>
+
+  <!-- Minus sign: subtraction, the core of echo cancellation -->
+  <line x1="474" y1="512" x2="550" y2="512"
+        stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Silence ripples, kept inside the ambient ellipse -->
+  <path d="M 838,446 Q 872,512 838,578" stroke="#a097cc" stroke-width="11"
+        fill="none" stroke-linecap="round" opacity="0.50"/>
+  <path d="M 886,410 Q 932,512 886,614" stroke="#a097cc" stroke-width="11"
+        fill="none" stroke-linecap="round" opacity="0.26"/>
+</svg>
